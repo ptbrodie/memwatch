@@ -1,7 +1,19 @@
 from functools import wraps
+import logging
 import os
 import resource
 from tcpy import TCPClient
+
+try:
+    from memwatchconfig import PROFILER_HOST
+except:
+    from defaultconfig import PROFILER_HOST
+try:
+    from memwatchconfig import PROFILER_PORT
+except:
+    from defaultconfig import PROFILER_PORT
+
+logger = logging.getLogger(__name__)
 
 
 def profile(key_name, custom_emit=None):
@@ -61,16 +73,19 @@ class ProfiledBlock(object):
             # We try to use a custom emit function
             self.custom_emit(peak_usage, unreturned, self.block_name)
         except:
-            print "Custom emit function failed. "
-            print "Usage: custom_emit(peak_usage, unreturned, block_name)\n"
+            msg = "Custom emit function failed.\n"
+            msg += "Usage/Signature: custom_emit(peak_usage (float), unreturned (float), block_name (str))"
+            logger.error(msg)
             self.emit(peak_usage, end_mem - self.start_mem, self.block_name)
 
     def enable(self):
         # Send our PID and the start signal to the memwatch server
-        self.profiler.execute(cmd="profile", opt="start")
+        self.profiler.send({"cmd": "profile", "opt": "start", "pid": self.pid})
+        self.profiler.recv()
 
     def disable(self):
-        self.profiler.execute(cmd="profile", opt="stop")
+        self.profiler.send({"cmd": "profile", "opt": "stop"})
+        return self.profiler.recv()
 
     def emit(self, peak_usage, unreturned, block_name):
         if unreturned > 0:

@@ -1,5 +1,19 @@
+import logging
 import psutil
+from tcpy import TCPServer, TCPHandler
 import time
+
+try:
+    from memwatchconfig import PROFILER_HOST
+except:
+    from defaultconfig import PROFILER_HOST
+try:
+    from memwatchconfig import PROFILER_PORT
+except:
+    from defaultconfig import PROFILER_PORT
+
+
+logger = logging.getLogger(__name__)
 
 
 def get_memory_usage(proc):
@@ -8,28 +22,27 @@ def get_memory_usage(proc):
         process = psutil.Process(proc)
         return process.get_memory_info()[0]
     except:
-        print "Profiler failed to get memory info for process %d!" % proc
+        msg = "Profiler failed to get memory info for process %d!" % proc
+        logger.error(msg)
 
 
-class MemoryProfiler(TCPServer):
-
-    """
-    Implements the Profiler Process that is forked to watch
-    the block of code that we want to profile.
+class MemoryProfiler(TCPHandler):
 
     """
+    Implements the Server that will watch
+    the block of code we want to profile.
 
-    def __init__(self, proc_to_watch, pipe):
+    """
+
+    def __init__(self, proc_to_watch):
         self.proc_to_watch = proc_to_watch
-        self.pipe = pipe
         self.start_mem = get_memory_usage(self.proc_to_watch)
-        super(MemoryProfiler, self).__init__()
 
-    def run(self):
+    def execute(self):
         try:
-            # Notify the parent that we are ready to begin.
+            # Notify the process that we are ready to begin.
             ready = True
-            self.pipe.send(ready)
+            self.conn.send(ready)
 
             # Get memory usage until the parent tells us to stop or we timeout.
             max_mem = self.start_mem
@@ -40,7 +53,7 @@ class MemoryProfiler(TCPServer):
                 max_mem = max(curr_mem, max_mem)
 
                 # Poll for stop signal
-                stop = self.pipe.poll()
+                stop = self.conn.recv()
                 if time.time() > timeout:
                     raise Exception("Memory Profiler timed out while watching %s!" % self.proc_to_watch)
 
@@ -48,17 +61,21 @@ class MemoryProfiler(TCPServer):
                 time.sleep(1.0 / 10000)
 
             # Send the results back to the parent.
-            self.pipe.send(max_mem - self.start_mem)
-            self.pipe.close()
+            self.success(peak_usage=max_mem - self.start_mem)
+            self.conn.finish()
         except Exception as e:
-            self.pipe.send(-1)
-            self.pipe.close()
             msg = e.message
             if not msg:
                 msg = "Memory Profiler process died watching %d!" % self.proc_to_watch
             # This should be logged
-            print msg
+            self.error(msg=msg)
+            self.conn.finish()
+            logger.error(msg)
 
 
 if __name__ == "__main__":
-    server = MemoryProfiler
+    server = TCPServer(PROFILER_HOST, PROFILER_PORT)
+    server.commands = {
+        'profile': MemoryProfiler
+    }
+    server.listen()

@@ -1,0 +1,2 @@
+PROFILER_HOST = 'localhost'
+PROFILER_PORT = 10501
