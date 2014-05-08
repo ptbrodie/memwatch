@@ -1,7 +1,6 @@
 import logging
 import psutil
 from tcpy import TCPServer, TCPHandler
-import time
 
 try:
     from memwatchconfig import PROFILER_HOST
@@ -13,7 +12,8 @@ except:
     from defaultconfig import PROFILER_PORT
 
 
-logger = logging.getLogger(__name__)
+logging.basicConfig()
+logger = logging.getLogger("memwatch.profiler")
 
 
 def get_memory_usage(proc):
@@ -34,43 +34,39 @@ class MemoryProfiler(TCPHandler):
 
     """
 
-    def __init__(self, proc_to_watch):
-        self.proc_to_watch = proc_to_watch
+    def __init__(self, opt=None, pid=None, **kwargs):
+        self.opt = opt
+        self.proc_to_watch = pid
         self.start_mem = get_memory_usage(self.proc_to_watch)
+        super(MemoryProfiler, self).__init__(**kwargs)
 
     def execute(self):
         try:
             # Notify the process that we are ready to begin.
-            ready = True
-            self.conn.send(ready)
+            self.send({"ready": True})
 
             # Get memory usage until the parent tells us to stop or we timeout.
             max_mem = self.start_mem
-            stop = False
-            timeout = time.time() + 10
-            while not stop:
+            self.conn.sock.settimeout(1.0 / 10000)
+            while True:
                 curr_mem = get_memory_usage(self.proc_to_watch)
                 max_mem = max(curr_mem, max_mem)
 
                 # Poll for stop signal
-                stop = self.conn.recv()
-                if time.time() > timeout:
-                    raise Exception("Memory Profiler timed out while watching %s!" % self.proc_to_watch)
-
-                # Give the CPU to someone else
-                time.sleep(1.0 / 10000)
+                try:
+                    self.recv()
+                    break
+                except:
+                    continue
 
             # Send the results back to the parent.
-            self.success(peak_usage=max_mem - self.start_mem)
-            self.conn.finish()
+            return self.success(peak_usage=max_mem - self.start_mem)
         except Exception as e:
             msg = e.message
             if not msg:
                 msg = "Memory Profiler process died watching %d!" % self.proc_to_watch
-            # This should be logged
-            self.error(msg=msg)
-            self.conn.finish()
             logger.error(msg)
+            return self.error(msg)
 
 
 if __name__ == "__main__":

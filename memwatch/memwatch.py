@@ -13,7 +13,8 @@ try:
 except:
     from defaultconfig import PROFILER_PORT
 
-logger = logging.getLogger(__name__)
+logging.basicConfig()
+logger = logging.getLogger("memwatch.memwatch")
 
 
 def profile(key_name, custom_emit=None):
@@ -54,7 +55,7 @@ class ProfiledBlock(object):
     def __init__(self, block_name, custom_emit=None):
         self.block_name = block_name
         self.pid = os.getpid()
-        self.custom_emit = custom_emit if custom_emit else self.emit
+        self.emit = custom_emit if custom_emit else self.default_emit
         self.profiler = TCPClient(PROFILER_HOST, PROFILER_PORT)
         self.start_mem = None
         self.units = None
@@ -64,19 +65,20 @@ class ProfiledBlock(object):
         self.enable()
 
     def __exit__(self, exc_type=None, exc_val=None, exc_tb=None):
-        peak_usage = self.disable()
-        end_mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        usage_result = self.disable()
+        if not usage_result.get("success", False):
+            raise Exception("%s: %s" % (self.block_name, usage_result.get("message")))
+
+        peak_usage = usage_result.get("peak_usage", 0)
+        unreturned = usage_result.get("unreturned", 0)
 
         # Emit the metrics
-        unreturned = end_mem - self.start_mem
         try:
             # We try to use a custom emit function
-            self.custom_emit(peak_usage, unreturned, self.block_name)
+            self.emit(peak_usage, unreturned, self.block_name)
         except:
-            msg = "Custom emit function failed.\n"
-            msg += "Usage/Signature: custom_emit(peak_usage (float), unreturned (float), block_name (str))"
-            logger.error(msg)
-            self.emit(peak_usage, end_mem - self.start_mem, self.block_name)
+            logger.error(custom_emit_fail_msg())
+            self.default_emit(peak_usage, unreturned, self.block_name)
 
     def enable(self):
         # Send our PID and the start signal to the memwatch server
@@ -84,10 +86,15 @@ class ProfiledBlock(object):
         self.profiler.recv()
 
     def disable(self):
-        self.profiler.send({"cmd": "profile", "opt": "stop"})
-        return self.profiler.recv()
+        self.profiler.send({"stop": True})
+        result = self.profiler.recv()
+        self.profiler.conn.finish()
+        end_mem = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        unreturned = end_mem - self.start_mem
+        result.update({"unreturned": unreturned})
+        return result
 
-    def emit(self, peak_usage, unreturned, block_name):
+    def default_emit(self, peak_usage, unreturned, block_name):
         if unreturned > 0:
             print ""
             print "POSSIBLE LEAK IN %s" % block_name
@@ -101,3 +108,11 @@ class ProfiledBlock(object):
         print "    Peak Usage: %s" % peak_usage
         print "    Unreturned: %s" % unreturned
         print line_match
+
+
+def custom_emit_fail_msg():
+    msg = "Custom emit function failed.\n"
+    msg += "Usage/Signature: custom_emit(peak_usage,  # float"
+    msg += "                             unreturned,  # float"
+    msg += "                             block_name)  # str"
+    return msg
